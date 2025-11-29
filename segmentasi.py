@@ -277,7 +277,7 @@ def process_single_image(img_path: str, tag: str, out_root: str = "output"):
     print(f"   - Panel      : {tag}_panel_edges.png")
 
 # ============================================================
-#  MAIN PROGRAM
+#  MAIN PROGRAMs
 # ============================================================
 
 if __name__ == "__main__":
@@ -288,10 +288,10 @@ if __name__ == "__main__":
     #   3) citra dengan derau gaussian
     #   4) citra hasil restorasi / citra lain yang relevan
     IMAGE_LIST = [
-        ("gray_clean",   "img_gray_clean.png"),
-        ("noise_sp",     "img_gray_sp_8.png"),
-        ("noise_gauss",  "img_gray_gauss_25.png"),
-        ("restored",     "img_restored.png"),
+        ("gray_clean",   "potrait_gray.png"),
+        ("noise_sp",     "potrait_gray_sp_8.png.png"),
+        ("noise_gauss",  "potrait_gray_gauss_25.png.png"),
+        ("restored",     "potrait.png"),
     ]
 
     out_root = "output_segmentasi"
