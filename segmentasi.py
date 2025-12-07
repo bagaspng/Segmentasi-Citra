@@ -13,6 +13,7 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 # ============================================================
 #  HELPER FUNCTIONS
@@ -122,16 +123,74 @@ def process_image(img, operator_name, kx, ky, out_dir, img_tag):
 #  VISUALIZATION FUNCTIONS
 # ============================================================
 
-def create_comparison_panel(images_dict, operators, out_path):
+def create_panel_by_operator(mag_results, operator_name, images_dict, out_dir):
     """
-    Buat panel perbandingan untuk semua operator dan gambar.
-    images_dict: {img_tag: {operator: magnitude_uint8}}
+    Buat panel untuk satu operator dengan 4 hasil (landscape_clean, landscape_noisy, 
+    portrait_clean, portrait_noisy) dengan keterangan nama gambar.
+    
+    Layout: 2x2 grid
     """
-    img_tags = list(images_dict.keys())
+    # Urutan gambar di panel
+    image_order = ["landscape_clean", "landscape_noisy", "portrait_clean", "portrait_noisy"]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig.suptitle(f'Operator {operator_name} - Edge Detection Results', 
+                 fontsize=16, fontweight='bold', y=0.995)
+    
+    # Warna label berdasarkan tipe (clean/noisy)
+    label_colors = {
+        "landscape_clean": "#2E7D32",     # Hijau gelap
+        "landscape_noisy": "#FF6F00",     # Orange
+        "portrait_clean": "#1565C0",      # Biru gelap
+        "portrait_noisy": "#C62828"       # Merah gelap
+    }
+    
+    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    
+    for pos, img_tag in zip(positions, image_order):
+        ax = axes[pos]
+        mag_u8 = mag_results[img_tag][operator_name][1]
+        
+        ax.imshow(mag_u8, cmap='gray')
+        ax.axis('off')
+        
+        # Format label
+        label_parts = img_tag.split('_')
+        label_type = label_parts[0].title()  # Landscape / Portrait
+        label_quality = label_parts[1].upper()  # CLEAN / NOISY
+        label_text = f"{label_type}\n{label_quality}"
+        
+        # Tambahkan label dengan background
+        bbox_props = dict(boxstyle='round,pad=0.5', facecolor=label_colors[img_tag], 
+                         edgecolor='white', linewidth=2, alpha=0.9)
+        ax.text(0.5, -0.05, label_text, transform=ax.transAxes, 
+               fontsize=12, fontweight='bold', color='white',
+               ha='center', va='top', bbox=bbox_props)
+    
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f"panel_{operator_name.lower()}.png")
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"✓ Panel {operator_name} disimpan: panel_{operator_name.lower()}.png")
+
+def create_all_operator_panels(mag_results, operators_list, images_dict, out_dir):
+    """Buat panel untuk semua operator."""
+    print("\n[Membuat Panel Berdasarkan Operator]")
+    print("-"*70)
+    for op_name in operators_list:
+        create_panel_by_operator(mag_results, op_name, images_dict, out_dir)
+
+def create_comparison_panel(images_dict, mag_results, operators, out_path):
+    """
+    Buat panel perbandingan semua operator pada satu gambar (layout: operators x images).
+    """
+    img_tags = ["landscape_clean", "landscape_noisy", "portrait_clean", "portrait_noisy"]
     n_imgs = len(img_tags)
     n_ops = len(operators)
     
-    fig, axes = plt.subplots(n_imgs, n_ops, figsize=(n_ops*4, n_imgs*3))
+    fig, axes = plt.subplots(n_imgs, n_ops, figsize=(n_ops*4, n_imgs*3.5))
+    fig.suptitle('Perbandingan Semua Operator pada Semua Citra', 
+                 fontsize=16, fontweight='bold')
     
     if n_imgs == 1:
         axes = axes.reshape(1, -1)
@@ -141,32 +200,34 @@ def create_comparison_panel(images_dict, operators, out_path):
     for i, img_tag in enumerate(img_tags):
         for j, op in enumerate(operators):
             ax = axes[i, j]
-            img = images_dict[img_tag][op]
-            ax.imshow(img, cmap='gray')
+            mag_u8 = mag_results[img_tag][op][1]
+            ax.imshow(mag_u8, cmap='gray')
             ax.axis('off')
+            
             if i == 0:
-                ax.set_title(op, fontsize=12, fontweight='bold')
+                ax.set_title(op, fontsize=12, fontweight='bold', pad=10)
             if j == 0:
-                ax.set_ylabel(img_tag.replace('_', '\n').title(), 
-                            fontsize=9, fontweight='bold', rotation=0, 
-                            ha='right', va='center')
+                label_text = img_tag.replace('_', '\n').title()
+                ax.set_ylabel(label_text, fontsize=11, fontweight='bold', 
+                            rotation=0, ha='right', va='center', labelpad=20)
     
     plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"✓ Panel perbandingan disimpan: {out_path}")
+    print(f"✓ Panel perbandingan semua operator disimpan: comparison_panel_all.png")
 
 def plot_mse_comparison(df, out_path):
     """Buat bar chart perbandingan MSE."""
-    # Pivot data untuk plotting
     pivot = df.pivot_table(index='Operator', columns='Comparison', values='MSE')
     
-    ax = pivot.plot(kind='bar', figsize=(12, 6), width=0.75, colormap='Set2')
+    fig, ax = plt.subplots(figsize=(12, 6))
+    pivot.plot(kind='bar', ax=ax, width=0.75, colormap='Set2')
+    
     ax.set_ylabel('MSE (Mean Squared Error)', fontsize=12, fontweight='bold')
     ax.set_xlabel('Operator Deteksi Tepi', fontsize=12, fontweight='bold')
     ax.set_title('Perbandingan MSE: Edge Detection pada Citra Clean vs Noisy', 
                  fontsize=14, fontweight='bold', pad=20)
-    ax.legend(title='Perbandingan', fontsize=10, title_fontsize=11)
+    ax.legend(title='Perbandingan', fontsize=10, title_fontsize=11, loc='upper left')
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     plt.xticks(rotation=0)
     
@@ -175,13 +236,13 @@ def plot_mse_comparison(df, out_path):
         ax.bar_label(container, fmt='%.1f', padding=3, fontsize=8)
     
     plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"✓ Grafik MSE disimpan: {out_path}")
+    print(f"✓ Grafik MSE disimpan: mse_comparison_chart.png")
 
 def create_summary_table(df, out_path):
     """Buat tabel summary dengan statistik tambahan."""
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(12, 5))
     ax.axis('tight')
     ax.axis('off')
     
@@ -203,7 +264,7 @@ def create_summary_table(df, out_path):
                      colWidths=[0.2, 0.4, 0.2, 0.2])
     table.auto_set_font_size(False)
     table.set_fontsize(10)
-    table.scale(1, 2)
+    table.scale(1, 2.2)
     
     # Style header
     for i in range(4):
@@ -218,9 +279,9 @@ def create_summary_table(df, out_path):
     
     plt.title('Tabel Perbandingan Metrik Edge Detection', 
               fontsize=14, fontweight='bold', pad=20)
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"✓ Tabel summary disimpan: {out_path}")
+    print(f"✓ Tabel summary disimpan: summary_table.png")
 
 # ============================================================
 #  MAIN PROCESSING
@@ -228,12 +289,11 @@ def create_summary_table(df, out_path):
 
 if __name__ == "__main__":
     # ---- KONFIGURASI INPUT ----
-    # Sesuaikan path gambar Anda di sini
     INPUT_IMAGES = {
-        "landscape_clean": "landscape_clean.png",        # Gambar landscape clean
-        "landscape_noisy": "landscape_noisy.png",        # Gambar landscape dengan noise
-        "portrait_clean": "portrait_clean.png",          # Gambar portrait clean
-        "portrait_noisy": "portrait_noisy.png"           # Gambar portrait dengan noise
+        "landscape_clean": "landscape_clean.png",
+        "landscape_noisy": "landscape_noisy.png",
+        "portrait_clean": "portrait_clean.png",
+        "portrait_noisy": "portrait_noisy.png"
     }
     
     OUTPUT_DIR = "output_segmentasi"
@@ -258,7 +318,6 @@ if __name__ == "__main__":
         try:
             img = load_gray(path)
             images[tag] = img
-            # Simpan copy ke output
             copy_path = os.path.join(OUTPUT_DIR, f"input_{tag}.png")
             cv2.imwrite(copy_path, img)
             print(f"  ✓ {tag:20s} : {img.shape} - {path}")
@@ -280,7 +339,7 @@ if __name__ == "__main__":
     print(f"\n[2/4] PROSES KONVOLUSI & EDGE DETECTION...")
     print("-"*70)
     
-    mag_results = {}  # {img_tag: {operator: (mag_float, mag_uint8)}}
+    mag_results = {}
     
     for img_tag, img in images.items():
         mag_results[img_tag] = {}
@@ -346,12 +405,10 @@ if __name__ == "__main__":
     print(" ANALISIS & KESIMPULAN")
     print(f"{'='*70}")
     
-    # Cari operator terbaik untuk landscape
     landscape_df = df[df['Comparison'].str.contains('Landscape')]
     best_landscape = landscape_df.loc[landscape_df['MSE'].idxmin()]
     worst_landscape = landscape_df.loc[landscape_df['MSE'].idxmax()]
     
-    # Cari operator terbaik untuk portrait
     portrait_df = df[df['Comparison'].str.contains('Portrait')]
     best_portrait = portrait_df.loc[portrait_df['MSE'].idxmin()]
     worst_portrait = portrait_df.loc[portrait_df['MSE'].idxmax()]
@@ -364,7 +421,6 @@ if __name__ == "__main__":
     print(f"   ➤ Terbaik (MSE terendah)  : {best_portrait['Operator']} (MSE = {best_portrait['MSE']:.2f})")
     print(f"   ➤ Terburuk (MSE tertinggi): {worst_portrait['Operator']} (MSE = {worst_portrait['MSE']:.2f})")
     
-    # MSE rata-rata per operator
     avg_mse = df.groupby('Operator')['MSE'].mean().sort_values()
     print("\n3. RATA-RATA MSE PER OPERATOR (keseluruhan):")
     for op, mse_val in avg_mse.items():
@@ -380,19 +436,18 @@ if __name__ == "__main__":
     print(f"\n[4/4] MEMBUAT VISUALISASI...")
     print("-"*70)
     
-    # Panel comparison untuk semua gambar
-    panel_data = {}
-    for img_tag in images.keys():
-        panel_data[img_tag] = {op: mag_results[img_tag][op][1] for op in OPERATORS.keys()}
+    # Buat panel berdasarkan operator (BARU)
+    create_all_operator_panels(mag_results, list(OPERATORS.keys()), images, OUTPUT_DIR)
     
+    # Buat panel perbandingan semua operator
     panel_path = os.path.join(OUTPUT_DIR, "comparison_panel_all.png")
-    create_comparison_panel(panel_data, list(OPERATORS.keys()), panel_path)
+    create_comparison_panel(images, mag_results, list(OPERATORS.keys()), panel_path)
     
-    # Plot MSE bar chart
+    # Buat grafik MSE
     mse_chart_path = os.path.join(OUTPUT_DIR, "mse_comparison_chart.png")
     plot_mse_comparison(df, mse_chart_path)
     
-    # Create summary table image
+    # Buat tabel summary
     summary_table_path = os.path.join(OUTPUT_DIR, "summary_table.png")
     create_summary_table(df, summary_table_path)
     
@@ -402,19 +457,22 @@ if __name__ == "__main__":
     print(f"{'='*70}")
     print(f"\nSemua hasil disimpan di folder: {OUTPUT_DIR}/")
     print("\nFile Output:")
-    print("  [Input Images]")
+    print("  [Panel Berdasarkan Operator]")
+    print("    - panel_roberts.png       : Roberts pada 4 citra")
+    print("    - panel_prewitt.png       : Prewitt pada 4 citra")
+    print("    - panel_sobel.png         : Sobel pada 4 citra")
+    print("    - panel_frei-chen.png     : Frei-Chen pada 4 citra")
+    print("\n  [Panel Perbandingan Semua Operator]")
+    print("    - comparison_panel_all.png    : Semua operator pada semua citra")
+    print("\n  [Grafik & Tabel]")
+    print("    - mse_comparison_chart.png    : Bar chart perbandingan MSE")
+    print("    - summary_table.png           : Tabel metrik lengkap (MSE & PSNR)")
+    print("    - mse_comparison_table.csv    : Data CSV untuk analisis lanjut")
+    print("\n  [Input Images (Copy)]")
     print("    - input_landscape_clean.png")
     print("    - input_landscape_noisy.png")
     print("    - input_portrait_clean.png")
     print("    - input_portrait_noisy.png")
-    print("\n  [Edge Detection Results]")
-    print("    - landscape_clean_<operator>_mag.png")
-    print("    - landscape_noisy_<operator>_mag.png")
-    print("    - portrait_clean_<operator>_mag.png")
-    print("    - portrait_noisy_<operator>_mag.png")
-    print("\n  [Comparison & Analysis]")
-    print("    - comparison_panel_all.png      : Panel visual semua hasil")
-    print("    - mse_comparison_chart.png      : Grafik bar chart MSE")
-    print("    - summary_table.png             : Tabel metrik lengkap")
-    print("    - mse_comparison_table.csv      : Data CSV untuk analisis lanjut")
+    print("\n  [Individual Edge Detection Results]")
+    print("    - *_mag.png : Hasil edge detection individual (16 file)")
     print(f"\n{'='*70}\n")
