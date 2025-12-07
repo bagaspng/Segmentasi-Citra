@@ -1,28 +1,38 @@
-# Simple edge segmentation comparison script
-# Runs in notebook, reads provided image, applies Roberts, Prewitt, Sobel, Frei-Chen
-# on clean and noisy versions, computes MSE between clean-edge and noisy-edge magnitudes,
-# displays results table and a bar chart.
-# Requirements: opencv-python, numpy, pandas, matplotlib (available in this env).
+"""
+Tugas Segmentasi Citra - Perbandingan Metode Edge Detection
+Metode: Roberts, Prewitt, Sobel, Frei-Chen
+Input: 4 gambar grayscale (2 landscape, 2 portrait - sudah termasuk yang berisi noise)
+Output: Hasil segmentasi + Tabel MSE + Grafik perbandingan
+----------------------------------------------------------------
+Requirements: pip install opencv-python numpy pandas matplotlib
+"""
 
-import cv2, os, math
+import cv2
+import os
+import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from caas_jupyter_tools import display_dataframe_to_user
 
-# --- helpers ---
+# ============================================================
+#  HELPER FUNCTIONS
+# ============================================================
+
 def ensure_dir(p):
+    """Pastikan folder output ada."""
     os.makedirs(p, exist_ok=True)
 
 def load_gray(p):
+    """Load gambar sebagai grayscale."""
     img = cv2.imread(p)
     if img is None:
-        raise FileNotFoundError(p)
+        raise FileNotFoundError(f"File tidak ditemukan: {p}")
     if img.ndim == 3:
         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return img.copy()
 
 def normalize_to_uint8(imgf):
+    """Normalisasi float image ke uint8 (0-255)."""
     mn, mx = float(imgf.min()), float(imgf.max())
     if mx - mn < 1e-8:
         return np.zeros_like(imgf, dtype=np.uint8)
@@ -30,175 +40,381 @@ def normalize_to_uint8(imgf):
     return np.clip(norm, 0, 255).astype(np.uint8)
 
 def mse(a, b):
+    """Hitung Mean Squared Error antara dua array."""
     a = a.astype(np.float32)
     b = b.astype(np.float32)
     return float(np.mean((a - b)**2))
 
-def add_salt_pepper(img, prob=0.1):
-    out = img.copy()
-    h,w = img.shape[:2]
-    rnd = np.random.rand(h,w)
-    salt = rnd < prob/2
-    pepper = rnd > 1 - prob/2
-    if img.ndim==2:
-        out[salt] = 255
-        out[pepper] = 0
-    else:
-        out[salt,:] = 255
-        out[pepper,:] = 0
-    return out
-
-def add_gaussian(img, sigma=20):
-    noise = np.random.normal(0, sigma, img.shape)
-    out = img.astype(np.float32) + noise
-    return np.clip(out, 0, 255).astype(np.uint8)
+def psnr(mse_val):
+    """Hitung PSNR dari MSE."""
+    if mse_val == 0:
+        return float('inf')
+    max_pixel = 255.0
+    return 20 * math.log10(max_pixel / math.sqrt(mse_val))
 
 def convolve2d_gray(img, kernel):
+    """Konvolusi manual 2D untuk grayscale image."""
     imgf = img.astype(np.float32)
-    kh,kw = kernel.shape
-    ph,pw = kh//2, kw//2
+    kh, kw = kernel.shape
+    ph, pw = kh//2, kw//2
     padded = cv2.copyMakeBorder(imgf, ph, ph, pw, pw, borderType=cv2.BORDER_REPLICATE)
-    h,w = img.shape
-    out = np.zeros((h,w), dtype=np.float32)
+    h, w = img.shape
+    out = np.zeros((h, w), dtype=np.float32)
     k = np.flipud(np.fliplr(kernel)).astype(np.float32)
+    
     for i in range(h):
         for j in range(w):
             region = padded[i:i+kh, j:j+kw]
-            out[i,j] = np.sum(region * k)
+            out[i, j] = np.sum(region * k)
     return out
 
-# --- kernels ---
-# Roberts (two 2x2 kernels for gx, gy)
-roberts_gx = np.array([[1, 0],
-                       [0,-1]], dtype=np.float32)
-roberts_gy = np.array([[0, 1],
-                       [-1,0]], dtype=np.float32)
+# ============================================================
+#  EDGE DETECTION KERNELS
+# ============================================================
+
+# Roberts (2x2)
+roberts_gx = np.array([[1, 0], [0, -1]], dtype=np.float32)
+roberts_gy = np.array([[0, 1], [-1, 0]], dtype=np.float32)
 
 # Prewitt (3x3)
-prew_gx = np.array([[-1,0,1],
-                    [-1,0,1],
-                    [-1,0,1]], dtype=np.float32)
-prew_gy = np.array([[-1,-1,-1],
-                    [ 0, 0, 0],
-                    [ 1, 1, 1]], dtype=np.float32)
+prewitt_gx = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]], dtype=np.float32)
+prewitt_gy = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]], dtype=np.float32)
 
 # Sobel (3x3)
-sobel_gx = np.array([[-1,0,1],
-                     [-2,0,2],
-                     [-1,0,1]], dtype=np.float32)
-sobel_gy = np.array([[-1,-2,-1],
-                     [ 0, 0, 0],
-                     [ 1, 2, 1]], dtype=np.float32)
+sobel_gx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+sobel_gy = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
 
-# Frei-Chen pair (approximation)
+# Frei-Chen (3x3)
 s2 = math.sqrt(2.0)
-freigx = np.array([[1, s2, 1],
-                   [0, 0, 0],
-                   [-1,-s2,-1]], dtype=np.float32)
-freigy = np.array([[1, 0, -1],
-                   [s2,0,-s2],
-                   [1, 0, -1]], dtype=np.float32)
+freichen_gx = np.array([[1, s2, 1], [0, 0, 0], [-1, -s2, -1]], dtype=np.float32)
+freichen_gy = np.array([[1, 0, -1], [s2, 0, -s2], [1, 0, -1]], dtype=np.float32)
 
 OPERATORS = {
     "Roberts": (roberts_gx, roberts_gy),
-    "Prewitt": (prew_gx, prew_gy),
+    "Prewitt": (prewitt_gx, prewitt_gy),
     "Sobel": (sobel_gx, sobel_gy),
-    "Frei-Chen": (freigx, freigy)
+    "Frei-Chen": (freichen_gx, freichen_gy)
 }
 
-# --- main processing ---
-img_path = "/mnt/data/0825f1ab-400e-426f-9325-23b49b309a88.png"
-img_gray = load_gray(img_path)
+# ============================================================
+#  PROCESSING FUNCTIONS
+# ============================================================
 
-# create noisy versions
-sp_prob = 0.15   # salt & pepper 15%
-gauss_sigma = 25  # gaussian sigma
-img_sp = add_salt_pepper(img_gray, prob=sp_prob)
-img_gauss = add_gaussian(img_gray, sigma=gauss_sigma)
+def compute_edge_magnitude(img, kx, ky):
+    """Hitung magnitude edge dari konvolusi dengan kernel gx dan gy."""
+    gx = convolve2d_gray(img, kx)
+    gy = convolve2d_gray(img, ky)
+    mag = np.sqrt(gx**2 + gy**2)
+    return mag
 
-# compute edge magnitudes for clean and noisy for each operator
-results = []
-out_dir = "/mnt/data/segment_results_simple"
-ensure_dir(out_dir)
+def process_image(img, operator_name, kx, ky, out_dir, img_tag):
+    """Proses satu gambar dengan satu operator dan simpan hasilnya."""
+    mag = compute_edge_magnitude(img, kx, ky)
+    mag_u8 = normalize_to_uint8(mag)
+    
+    # Simpan hasil magnitude
+    out_path = os.path.join(out_dir, f"{img_tag}_{operator_name}_mag.png")
+    cv2.imwrite(out_path, mag_u8)
+    
+    return mag, mag_u8
 
-# store images for visualization (magnitude normalized)
-mag_images = {"clean":{}, "sp":{}, "gauss":{}}
+# ============================================================
+#  VISUALIZATION FUNCTIONS
+# ============================================================
 
-for name, (kx, ky) in OPERATORS.items():
-    gx_clean = convolve2d_gray(img_gray, kx)
-    gy_clean = convolve2d_gray(img_gray, ky)
-    mag_clean = np.sqrt(gx_clean**2 + gy_clean**2)
-    mag_images["clean"][name] = normalize_to_uint8(mag_clean)
-    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_clean.png"), mag_images["clean"][name])
+def create_comparison_panel(images_dict, operators, out_path):
+    """
+    Buat panel perbandingan untuk semua operator dan gambar.
+    images_dict: {img_tag: {operator: magnitude_uint8}}
+    """
+    img_tags = list(images_dict.keys())
+    n_imgs = len(img_tags)
+    n_ops = len(operators)
+    
+    fig, axes = plt.subplots(n_imgs, n_ops, figsize=(n_ops*4, n_imgs*3))
+    
+    if n_imgs == 1:
+        axes = axes.reshape(1, -1)
+    if n_ops == 1:
+        axes = axes.reshape(-1, 1)
+    
+    for i, img_tag in enumerate(img_tags):
+        for j, op in enumerate(operators):
+            ax = axes[i, j]
+            img = images_dict[img_tag][op]
+            ax.imshow(img, cmap='gray')
+            ax.axis('off')
+            if i == 0:
+                ax.set_title(op, fontsize=12, fontweight='bold')
+            if j == 0:
+                ax.set_ylabel(img_tag.replace('_', '\n').title(), 
+                            fontsize=9, fontweight='bold', rotation=0, 
+                            ha='right', va='center')
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Panel perbandingan disimpan: {out_path}")
 
-    gx_sp = convolve2d_gray(img_sp, kx)
-    gy_sp = convolve2d_gray(img_sp, ky)
-    mag_sp = np.sqrt(gx_sp**2 + gy_sp**2)
-    mag_images["sp"][name] = normalize_to_uint8(mag_sp)
-    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_sp.png"), mag_images["sp"][name])
+def plot_mse_comparison(df, out_path):
+    """Buat bar chart perbandingan MSE."""
+    # Pivot data untuk plotting
+    pivot = df.pivot_table(index='Operator', columns='Comparison', values='MSE')
+    
+    ax = pivot.plot(kind='bar', figsize=(12, 6), width=0.75, colormap='Set2')
+    ax.set_ylabel('MSE (Mean Squared Error)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Operator Deteksi Tepi', fontsize=12, fontweight='bold')
+    ax.set_title('Perbandingan MSE: Edge Detection pada Citra Clean vs Noisy', 
+                 fontsize=14, fontweight='bold', pad=20)
+    ax.legend(title='Perbandingan', fontsize=10, title_fontsize=11)
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    plt.xticks(rotation=0)
+    
+    # Tambahkan nilai MSE di atas bar
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.1f', padding=3, fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Grafik MSE disimpan: {out_path}")
 
-    gx_g = convolve2d_gray(img_gauss, kx)
-    gy_g = convolve2d_gray(img_gauss, ky)
-    mag_g = np.sqrt(gx_g**2 + gy_g**2)
-    mag_images["gauss"][name] = normalize_to_uint8(mag_g)
-    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_gauss.png"), mag_images["gauss"][name])
+def create_summary_table(df, out_path):
+    """Buat tabel summary dengan statistik tambahan."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.axis('tight')
+    ax.axis('off')
+    
+    # Format tabel
+    table_data = []
+    table_data.append(['Operator', 'Comparison', 'MSE', 'PSNR (dB)'])
+    
+    for _, row in df.iterrows():
+        psnr_val = psnr(row['MSE']) if row['MSE'] > 0 else float('inf')
+        psnr_str = f"{psnr_val:.2f}" if psnr_val != float('inf') else "∞"
+        table_data.append([
+            row['Operator'],
+            row['Comparison'],
+            f"{row['MSE']:.2f}",
+            psnr_str
+        ])
+    
+    table = ax.table(cellText=table_data, cellLoc='center', loc='center',
+                     colWidths=[0.2, 0.4, 0.2, 0.2])
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+    
+    # Style header
+    for i in range(4):
+        table[(0, i)].set_facecolor('#4CAF50')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+    
+    # Alternate row colors
+    for i in range(1, len(table_data)):
+        if i % 2 == 0:
+            for j in range(4):
+                table[(i, j)].set_facecolor('#f0f0f0')
+    
+    plt.title('Tabel Perbandingan Metrik Edge Detection', 
+              fontsize=14, fontweight='bold', pad=20)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Tabel summary disimpan: {out_path}")
 
-    # compute MSE between clean magnitude (float) and noisy magnitude (float)
-    mse_sp = mse(mag_clean, mag_sp)
-    mse_gauss = mse(mag_clean, mag_g)
-    results.append({"Operator": name, "Noise": "Salt&Pepper", "MSE": mse_sp})
-    results.append({"Operator": name, "Noise": "Gaussian", "MSE": mse_gauss})
+# ============================================================
+#  MAIN PROCESSING
+# ============================================================
 
-# build DataFrame table
-df = pd.DataFrame(results)
-display_dataframe_to_user("MSE Comparison (edge magnitude)", df)
-
-# Save a CSV
-csv_path = os.path.join(out_dir, "mse_comparison.csv")
-df.to_csv(csv_path, index=False)
-
-# --- Plot bar chart grouped by operator ---
-operators = list(OPERATORS.keys())
-mse_sp_vals = [df[(df.Operator==op) & (df.Noise=="Salt&Pepper")]["MSE"].values[0] for op in operators]
-mse_gauss_vals = [df[(df.Operator==op) & (df.Noise=="Gaussian")]["MSE"].values[0] for op in operators]
-
-x = np.arange(len(operators))
-width = 0.35
-
-fig, ax = plt.subplots(figsize=(8,4))
-ax.bar(x - width/2, mse_sp_vals, width, label='Salt&Pepper')
-ax.bar(x + width/2, mse_gauss_vals, width, label='Gaussian')
-ax.set_ylabel('MSE (magnitude)')
-ax.set_title('MSE between clean-edge and noisy-edge (per operator)')
-ax.set_xticks(x)
-ax.set_xticklabels(operators, rotation=10)
-ax.legend()
-plt.tight_layout()
-plt_path = os.path.join(out_dir, "mse_bar.png")
-plt.savefig(plt_path)
-plt.show()
-
-# show small montage of magnitude images for quick visual
-def make_row(names, kind):
-    imgs = [mag_images[kind][n] for n in names]
-    labels = [n for n in names]
-    rows = []
-    for im,l in zip(imgs, labels):
-        lab = np.full((30, im.shape[1], 3), 255, dtype=np.uint8)
-        cv2.putText(lab, l, (6,20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0),1, cv2.LINE_AA)
-        imc = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
-        rows.append(np.vstack([imc, lab]))
-    return cv2.hconcat(rows)
-
-row_clean = make_row(operators, "clean")
-row_sp = make_row(operators, "sp")
-row_gauss = make_row(operators, "gauss")
-
-cv2.imwrite(os.path.join(out_dir, "panel_clean_row.png"), row_clean)
-cv2.imwrite(os.path.join(out_dir, "panel_sp_row.png"), row_sp)
-cv2.imwrite(os.path.join(out_dir, "panel_gauss_row.png"), row_gauss)
-
-print(f"\nImages and CSV saved under: {out_dir}")
-print(f" - CSV: {csv_path}")
-print(f" - Bar chart: {plt_path}")
-print(" - Panels: panel_clean_row.png, panel_sp_row.png, panel_gauss_row.png")
+if __name__ == "__main__":
+    # ---- KONFIGURASI INPUT ----
+    # Sesuaikan path gambar Anda di sini
+    INPUT_IMAGES = {
+        "landscape_clean": "landscape_clean.png",        # Gambar landscape clean
+        "landscape_noisy": "landscape_noisy.png",        # Gambar landscape dengan noise
+        "portrait_clean": "portrait_clean.png",          # Gambar portrait clean
+        "portrait_noisy": "portrait_noisy.png"           # Gambar portrait dengan noise
+    }
+    
+    OUTPUT_DIR = "output_segmentasi"
+    ensure_dir(OUTPUT_DIR)
+    
+    print("="*70)
+    print(" SEGMENTASI CITRA - PERBANDINGAN METODE EDGE DETECTION")
+    print("="*70)
+    print("\nMetode yang digunakan:")
+    print("  1. Roberts   - Operator 2x2 (sederhana, sensitif noise)")
+    print("  2. Prewitt   - Operator 3x3 (lebih smooth)")
+    print("  3. Sobel     - Operator 3x3 (weighted, populer)")
+    print("  4. Frei-Chen - Operator 3x3 (basis optimal)")
+    print("="*70)
+    
+    # ---- LOAD IMAGES ----
+    images = {}
+    missing_files = []
+    
+    print("\n[1/4] LOADING INPUT IMAGES...")
+    for tag, path in INPUT_IMAGES.items():
+        try:
+            img = load_gray(path)
+            images[tag] = img
+            # Simpan copy ke output
+            copy_path = os.path.join(OUTPUT_DIR, f"input_{tag}.png")
+            cv2.imwrite(copy_path, img)
+            print(f"  ✓ {tag:20s} : {img.shape} - {path}")
+        except FileNotFoundError:
+            print(f"  ✗ {tag:20s} : FILE NOT FOUND - {path}")
+            missing_files.append(path)
+    
+    if missing_files:
+        print(f"\n⚠ ERROR: {len(missing_files)} file(s) tidak ditemukan!")
+        print("  File yang hilang:")
+        for f in missing_files:
+            print(f"    - {f}")
+        print("\n  Pastikan file-file berikut ada di direktori:")
+        for tag, path in INPUT_IMAGES.items():
+            print(f"    - {path}")
+        exit(1)
+    
+    # ---- PROCESS ALL IMAGES WITH ALL OPERATORS ----
+    print(f"\n[2/4] PROSES KONVOLUSI & EDGE DETECTION...")
+    print("-"*70)
+    
+    mag_results = {}  # {img_tag: {operator: (mag_float, mag_uint8)}}
+    
+    for img_tag, img in images.items():
+        mag_results[img_tag] = {}
+        print(f"\n→ {img_tag.upper()}")
+        
+        for op_name, (kx, ky) in OPERATORS.items():
+            print(f"  • Konvolusi {op_name}...", end=' ')
+            mag_float, mag_u8 = process_image(img, op_name, kx, ky, OUTPUT_DIR, img_tag)
+            mag_results[img_tag][op_name] = (mag_float, mag_u8)
+            print(f"✓ (min={mag_float.min():.1f}, max={mag_float.max():.1f})")
+    
+    # ---- COMPUTE MSE COMPARISONS ----
+    print(f"\n[3/4] MENGHITUNG MSE (MEAN SQUARED ERROR)...")
+    print("-"*70)
+    
+    results = []
+    
+    # Perbandingan 1: Landscape clean vs noisy
+    print("\n→ LANDSCAPE: Clean vs Noisy")
+    for op_name in OPERATORS.keys():
+        mag_clean, _ = mag_results["landscape_clean"][op_name]
+        mag_noisy, _ = mag_results["landscape_noisy"][op_name]
+        mse_val = mse(mag_clean, mag_noisy)
+        psnr_val = psnr(mse_val)
+        print(f"  • {op_name:12s} : MSE={mse_val:8.2f}  PSNR={psnr_val:6.2f} dB")
+        results.append({
+            "Operator": op_name,
+            "Comparison": "Landscape (Clean vs Noisy)",
+            "MSE": round(mse_val, 2),
+            "PSNR": round(psnr_val, 2) if psnr_val != float('inf') else psnr_val
+        })
+    
+    # Perbandingan 2: Portrait clean vs noisy
+    print("\n→ PORTRAIT: Clean vs Noisy")
+    for op_name in OPERATORS.keys():
+        mag_clean, _ = mag_results["portrait_clean"][op_name]
+        mag_noisy, _ = mag_results["portrait_noisy"][op_name]
+        mse_val = mse(mag_clean, mag_noisy)
+        psnr_val = psnr(mse_val)
+        print(f"  • {op_name:12s} : MSE={mse_val:8.2f}  PSNR={psnr_val:6.2f} dB")
+        results.append({
+            "Operator": op_name,
+            "Comparison": "Portrait (Clean vs Noisy)",
+            "MSE": round(mse_val, 2),
+            "PSNR": round(psnr_val, 2) if psnr_val != float('inf') else psnr_val
+        })
+    
+    # ---- CREATE DATAFRAME & SAVE ----
+    df = pd.DataFrame(results)
+    
+    csv_path = os.path.join(OUTPUT_DIR, "mse_comparison_table.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"\n✓ Tabel MSE disimpan: {csv_path}")
+    
+    # ---- PRINT SUMMARY ----
+    print(f"\n{'='*70}")
+    print(" TABEL HASIL PERBANDINGAN MSE")
+    print(f"{'='*70}")
+    print(df.to_string(index=False))
+    
+    # ---- ANALISIS KESIMPULAN ----
+    print(f"\n{'='*70}")
+    print(" ANALISIS & KESIMPULAN")
+    print(f"{'='*70}")
+    
+    # Cari operator terbaik untuk landscape
+    landscape_df = df[df['Comparison'].str.contains('Landscape')]
+    best_landscape = landscape_df.loc[landscape_df['MSE'].idxmin()]
+    worst_landscape = landscape_df.loc[landscape_df['MSE'].idxmax()]
+    
+    # Cari operator terbaik untuk portrait
+    portrait_df = df[df['Comparison'].str.contains('Portrait')]
+    best_portrait = portrait_df.loc[portrait_df['MSE'].idxmin()]
+    worst_portrait = portrait_df.loc[portrait_df['MSE'].idxmax()]
+    
+    print("\n1. PERFORMA OPERATOR PADA LANDSCAPE:")
+    print(f"   ➤ Terbaik (MSE terendah)  : {best_landscape['Operator']} (MSE = {best_landscape['MSE']:.2f})")
+    print(f"   ➤ Terburuk (MSE tertinggi): {worst_landscape['Operator']} (MSE = {worst_landscape['MSE']:.2f})")
+    
+    print("\n2. PERFORMA OPERATOR PADA PORTRAIT:")
+    print(f"   ➤ Terbaik (MSE terendah)  : {best_portrait['Operator']} (MSE = {best_portrait['MSE']:.2f})")
+    print(f"   ➤ Terburuk (MSE tertinggi): {worst_portrait['Operator']} (MSE = {worst_portrait['MSE']:.2f})")
+    
+    # MSE rata-rata per operator
+    avg_mse = df.groupby('Operator')['MSE'].mean().sort_values()
+    print("\n3. RATA-RATA MSE PER OPERATOR (keseluruhan):")
+    for op, mse_val in avg_mse.items():
+        print(f"   • {op:12s} : {mse_val:8.2f}")
+    
+    print("\n4. KESIMPULAN UMUM:")
+    print(f"   • Operator paling robust (MSE terendah rata-rata): {avg_mse.index[0]}")
+    print(f"   • Operator paling sensitif (MSE tertinggi rata-rata): {avg_mse.index[-1]}")
+    print("   • MSE rendah = edge detection lebih konsisten terhadap noise")
+    print("   • MSE tinggi = operator lebih sensitif terhadap perubahan noise")
+    
+    # ---- CREATE VISUALIZATIONS ----
+    print(f"\n[4/4] MEMBUAT VISUALISASI...")
+    print("-"*70)
+    
+    # Panel comparison untuk semua gambar
+    panel_data = {}
+    for img_tag in images.keys():
+        panel_data[img_tag] = {op: mag_results[img_tag][op][1] for op in OPERATORS.keys()}
+    
+    panel_path = os.path.join(OUTPUT_DIR, "comparison_panel_all.png")
+    create_comparison_panel(panel_data, list(OPERATORS.keys()), panel_path)
+    
+    # Plot MSE bar chart
+    mse_chart_path = os.path.join(OUTPUT_DIR, "mse_comparison_chart.png")
+    plot_mse_comparison(df, mse_chart_path)
+    
+    # Create summary table image
+    summary_table_path = os.path.join(OUTPUT_DIR, "summary_table.png")
+    create_summary_table(df, summary_table_path)
+    
+    # ---- FINAL SUMMARY ----
+    print(f"\n{'='*70}")
+    print(" PROSES SELESAI!")
+    print(f"{'='*70}")
+    print(f"\nSemua hasil disimpan di folder: {OUTPUT_DIR}/")
+    print("\nFile Output:")
+    print("  [Input Images]")
+    print("    - input_landscape_clean.png")
+    print("    - input_landscape_noisy.png")
+    print("    - input_portrait_clean.png")
+    print("    - input_portrait_noisy.png")
+    print("\n  [Edge Detection Results]")
+    print("    - landscape_clean_<operator>_mag.png")
+    print("    - landscape_noisy_<operator>_mag.png")
+    print("    - portrait_clean_<operator>_mag.png")
+    print("    - portrait_noisy_<operator>_mag.png")
+    print("\n  [Comparison & Analysis]")
+    print("    - comparison_panel_all.png      : Panel visual semua hasil")
+    print("    - mse_comparison_chart.png      : Grafik bar chart MSE")
+    print("    - summary_table.png             : Tabel metrik lengkap")
+    print("    - mse_comparison_table.csv      : Data CSV untuk analisis lanjut")
+    print(f"\n{'='*70}\n")
