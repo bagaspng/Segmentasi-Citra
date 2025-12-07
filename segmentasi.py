@@ -1,306 +1,204 @@
-"""
-Tugas Segmentasi Citra (Kelompok)
-Metode: Roberts, Prewitt, Sobel, Frei-Chen
-Implementasi manual (tanpa cv2.Sobel, cv2.filter2D, dll.)
-----------------------------------------------------------------
-Kebutuhan:
-    pip install opencv-python numpy
+# Simple edge segmentation comparison script
+# Runs in notebook, reads provided image, applies Roberts, Prewitt, Sobel, Frei-Chen
+# on clean and noisy versions, computes MSE between clean-edge and noisy-edge magnitudes,
+# displays results table and a bar chart.
+# Requirements: opencv-python, numpy, pandas, matplotlib (available in this env).
 
-Cara pakai (di terminal):
-    python segmentasi_kelompok.py
-"""
-
-import cv2
+import cv2, os, math
 import numpy as np
-import os
+import pandas as pd
+import matplotlib.pyplot as plt
+from caas_jupyter_tools import display_dataframe_to_user
 
-def ensure_dir(path: str):
-    """Pastikan folder output ada."""
-    if not os.path.exists(path):
-        os.makedirs(path)
+# --- helpers ---
+def ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
 
-def load_as_gray(path: str) -> np.ndarray:
-    """
-    Membaca citra dan mengembalikan versi grayscale (uint8).
-    Jika citra sudah grayscale, langsung dikembalikan.
-    """
-    img = cv2.imread(path)
+def load_gray(p):
+    img = cv2.imread(p)
     if img is None:
-        raise FileNotFoundError(f"Gagal membaca gambar: {path}")
-    if len(img.shape) == 2:
-        gray = img
+        raise FileNotFoundError(p)
+    if img.ndim == 3:
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return img.copy()
+
+def normalize_to_uint8(imgf):
+    mn, mx = float(imgf.min()), float(imgf.max())
+    if mx - mn < 1e-8:
+        return np.zeros_like(imgf, dtype=np.uint8)
+    norm = (imgf - mn) / (mx - mn) * 255.0
+    return np.clip(norm, 0, 255).astype(np.uint8)
+
+def mse(a, b):
+    a = a.astype(np.float32)
+    b = b.astype(np.float32)
+    return float(np.mean((a - b)**2))
+
+def add_salt_pepper(img, prob=0.1):
+    out = img.copy()
+    h,w = img.shape[:2]
+    rnd = np.random.rand(h,w)
+    salt = rnd < prob/2
+    pepper = rnd > 1 - prob/2
+    if img.ndim==2:
+        out[salt] = 255
+        out[pepper] = 0
     else:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return gray
+        out[salt,:] = 255
+        out[pepper,:] = 0
+    return out
 
-def normalize_to_uint8(img: np.ndarray) -> np.ndarray:
-    """
-    Normalisasi citra float ke rentang 0–255 dan ubah ke uint8.
-    """
-    img = img.astype(np.float32)
-    min_val, max_val = img.min(), img.max()
-    if max_val - min_val < 1e-6:
-        return np.zeros_like(img, dtype=np.uint8)
-    norm = (img - min_val) / (max_val - min_val) * 255.0
-    return norm.astype(np.uint8)
+def add_gaussian(img, sigma=20):
+    noise = np.random.normal(0, sigma, img.shape)
+    out = img.astype(np.float32) + noise
+    return np.clip(out, 0, 255).astype(np.uint8)
 
-# ============================================================
-#  KONVOLUSI MANUAL 2D (UNTUK GRAYSCALE)
-# ============================================================
-
-def convolve2d_gray(img: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """
-    Konvolusi manual antara citra grayscale (2D) dengan kernel 2D.
-    Padding menggunakan BORDER_REPLICATE (edge).
-    Output berupa float32.
-    """
-    img = img.astype(np.float32)
-    kh, kw = kernel.shape
-    ph, pw = kh // 2, kw // 2
-
-    padded = cv2.copyMakeBorder(
-        img, ph, ph, pw, pw,
-        borderType=cv2.BORDER_REPLICATE
-    )
-
-    h, w = img.shape
-    out = np.zeros((h, w), dtype=np.float32)
-
-    # Flip kernel untuk konvolusi
+def convolve2d_gray(img, kernel):
+    imgf = img.astype(np.float32)
+    kh,kw = kernel.shape
+    ph,pw = kh//2, kw//2
+    padded = cv2.copyMakeBorder(imgf, ph, ph, pw, pw, borderType=cv2.BORDER_REPLICATE)
+    h,w = img.shape
+    out = np.zeros((h,w), dtype=np.float32)
     k = np.flipud(np.fliplr(kernel)).astype(np.float32)
-
     for i in range(h):
         for j in range(w):
             region = padded[i:i+kh, j:j+kw]
-            out[i, j] = np.sum(region * k)
-
+            out[i,j] = np.sum(region * k)
     return out
 
-# ============================================================
-#  OPERATOR SEGMENTASI
-# ============================================================
+# --- kernels ---
+# Roberts (two 2x2 kernels for gx, gy)
+roberts_gx = np.array([[1, 0],
+                       [0,-1]], dtype=np.float32)
+roberts_gy = np.array([[0, 1],
+                       [-1,0]], dtype=np.float32)
 
-def edge_roberts(img_gray: np.ndarray) -> np.ndarray:
-    """
-    Deteksi tepi dengan operator Roberts.
-    Kernel 2x2.
-    """
-    gx_kernel = np.array([[1, 0],
-                          [0, -1]], dtype=np.float32)
-    gy_kernel = np.array([[0, 1],
-                          [-1, 0]], dtype=np.float32)
+# Prewitt (3x3)
+prew_gx = np.array([[-1,0,1],
+                    [-1,0,1],
+                    [-1,0,1]], dtype=np.float32)
+prew_gy = np.array([[-1,-1,-1],
+                    [ 0, 0, 0],
+                    [ 1, 1, 1]], dtype=np.float32)
 
-    gx = convolve2d_gray(img_gray, gx_kernel)
-    gy = convolve2d_gray(img_gray, gy_kernel)
+# Sobel (3x3)
+sobel_gx = np.array([[-1,0,1],
+                     [-2,0,2],
+                     [-1,0,1]], dtype=np.float32)
+sobel_gy = np.array([[-1,-2,-1],
+                     [ 0, 0, 0],
+                     [ 1, 2, 1]], dtype=np.float32)
 
-    mag = np.sqrt(gx**2 + gy**2)
-    return normalize_to_uint8(mag)
+# Frei-Chen pair (approximation)
+s2 = math.sqrt(2.0)
+freigx = np.array([[1, s2, 1],
+                   [0, 0, 0],
+                   [-1,-s2,-1]], dtype=np.float32)
+freigy = np.array([[1, 0, -1],
+                   [s2,0,-s2],
+                   [1, 0, -1]], dtype=np.float32)
 
+OPERATORS = {
+    "Roberts": (roberts_gx, roberts_gy),
+    "Prewitt": (prew_gx, prew_gy),
+    "Sobel": (sobel_gx, sobel_gy),
+    "Frei-Chen": (freigx, freigy)
+}
 
-def edge_prewitt(img_gray: np.ndarray) -> np.ndarray:
-    """
-    Deteksi tepi dengan operator Prewitt (3x3).
-    """
-    gx_kernel = np.array([[-1, 0, 1],
-                          [-1, 0, 1],
-                          [-1, 0, 1]], dtype=np.float32)
+# --- main processing ---
+img_path = "/mnt/data/0825f1ab-400e-426f-9325-23b49b309a88.png"
+img_gray = load_gray(img_path)
 
-    gy_kernel = np.array([[-1, -1, -1],
-                          [ 0,  0,  0],
-                          [ 1,  1,  1]], dtype=np.float32)
+# create noisy versions
+sp_prob = 0.15   # salt & pepper 15%
+gauss_sigma = 25  # gaussian sigma
+img_sp = add_salt_pepper(img_gray, prob=sp_prob)
+img_gauss = add_gaussian(img_gray, sigma=gauss_sigma)
 
-    gx = convolve2d_gray(img_gray, gx_kernel)
-    gy = convolve2d_gray(img_gray, gy_kernel)
+# compute edge magnitudes for clean and noisy for each operator
+results = []
+out_dir = "/mnt/data/segment_results_simple"
+ensure_dir(out_dir)
 
-    mag = np.sqrt(gx**2 + gy**2)
-    return normalize_to_uint8(mag)
+# store images for visualization (magnitude normalized)
+mag_images = {"clean":{}, "sp":{}, "gauss":{}}
 
+for name, (kx, ky) in OPERATORS.items():
+    gx_clean = convolve2d_gray(img_gray, kx)
+    gy_clean = convolve2d_gray(img_gray, ky)
+    mag_clean = np.sqrt(gx_clean**2 + gy_clean**2)
+    mag_images["clean"][name] = normalize_to_uint8(mag_clean)
+    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_clean.png"), mag_images["clean"][name])
 
-def edge_sobel(img_gray: np.ndarray) -> np.ndarray:
-    """
-    Deteksi tepi dengan operator Sobel (3x3).
-    """
-    gx_kernel = np.array([[-1, 0, 1],
-                          [-2, 0, 2],
-                          [-1, 0, 1]], dtype=np.float32)
+    gx_sp = convolve2d_gray(img_sp, kx)
+    gy_sp = convolve2d_gray(img_sp, ky)
+    mag_sp = np.sqrt(gx_sp**2 + gy_sp**2)
+    mag_images["sp"][name] = normalize_to_uint8(mag_sp)
+    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_sp.png"), mag_images["sp"][name])
 
-    gy_kernel = np.array([[-1, -2, -1],
-                          [ 0,  0,  0],
-                          [ 1,  2,  1]], dtype=np.float32)
+    gx_g = convolve2d_gray(img_gauss, kx)
+    gy_g = convolve2d_gray(img_gauss, ky)
+    mag_g = np.sqrt(gx_g**2 + gy_g**2)
+    mag_images["gauss"][name] = normalize_to_uint8(mag_g)
+    cv2.imwrite(os.path.join(out_dir, f"{name}_mag_gauss.png"), mag_images["gauss"][name])
 
-    gx = convolve2d_gray(img_gray, gx_kernel)
-    gy = convolve2d_gray(img_gray, gy_kernel)
+    # compute MSE between clean magnitude (float) and noisy magnitude (float)
+    mse_sp = mse(mag_clean, mag_sp)
+    mse_gauss = mse(mag_clean, mag_g)
+    results.append({"Operator": name, "Noise": "Salt&Pepper", "MSE": mse_sp})
+    results.append({"Operator": name, "Noise": "Gaussian", "MSE": mse_gauss})
 
-    mag = np.sqrt(gx**2 + gy**2)
-    return normalize_to_uint8(mag)
+# build DataFrame table
+df = pd.DataFrame(results)
+display_dataframe_to_user("MSE Comparison (edge magnitude)", df)
 
+# Save a CSV
+csv_path = os.path.join(out_dir, "mse_comparison.csv")
+df.to_csv(csv_path, index=False)
 
-def edge_freichen(img_gray: np.ndarray) -> np.ndarray:
-    """
-    Deteksi tepi dengan operator Frei-Chen.
-    Menggunakan 4 kernel edge utama dan menggabungkan responnya.
-    """
-    s2 = np.sqrt(2.0)
+# --- Plot bar chart grouped by operator ---
+operators = list(OPERATORS.keys())
+mse_sp_vals = [df[(df.Operator==op) & (df.Noise=="Salt&Pepper")]["MSE"].values[0] for op in operators]
+mse_gauss_vals = [df[(df.Operator==op) & (df.Noise=="Gaussian")]["MSE"].values[0] for op in operators]
 
-    k1 = np.array([[1,      s2,  1],
-                   [0,      0,   0],
-                   [-1, -s2, -1]], dtype=np.float32)  # vertikal
+x = np.arange(len(operators))
+width = 0.35
 
-    k2 = np.array([[1,  0, -1],
-                   [s2, 0, -s2],
-                   [1,  0, -1]], dtype=np.float32)    # horizontal
+fig, ax = plt.subplots(figsize=(8,4))
+ax.bar(x - width/2, mse_sp_vals, width, label='Salt&Pepper')
+ax.bar(x + width/2, mse_gauss_vals, width, label='Gaussian')
+ax.set_ylabel('MSE (magnitude)')
+ax.set_title('MSE between clean-edge and noisy-edge (per operator)')
+ax.set_xticks(x)
+ax.set_xticklabels(operators, rotation=10)
+ax.legend()
+plt.tight_layout()
+plt_path = os.path.join(out_dir, "mse_bar.png")
+plt.savefig(plt_path)
+plt.show()
 
-    k3 = np.array([[0,     -1,   s2],
-                   [1,      0,  -1],
-                   [-s2,    1,   0]], dtype=np.float32)  # diagonal 1
+# show small montage of magnitude images for quick visual
+def make_row(names, kind):
+    imgs = [mag_images[kind][n] for n in names]
+    labels = [n for n in names]
+    rows = []
+    for im,l in zip(imgs, labels):
+        lab = np.full((30, im.shape[1], 3), 255, dtype=np.uint8)
+        cv2.putText(lab, l, (6,20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0),1, cv2.LINE_AA)
+        imc = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
+        rows.append(np.vstack([imc, lab]))
+    return cv2.hconcat(rows)
 
-    k4 = np.array([[s2,  -1,  0],
-                   [-1,  0,  1],
-                   [0,   1, -s2]], dtype=np.float32)     # diagonal 2
+row_clean = make_row(operators, "clean")
+row_sp = make_row(operators, "sp")
+row_gauss = make_row(operators, "gauss")
 
-    r1 = convolve2d_gray(img_gray, k1)
-    r2 = convolve2d_gray(img_gray, k2)
-    r3 = convolve2d_gray(img_gray, k3)
-    r4 = convolve2d_gray(img_gray, k4)
+cv2.imwrite(os.path.join(out_dir, "panel_clean_row.png"), row_clean)
+cv2.imwrite(os.path.join(out_dir, "panel_sp_row.png"), row_sp)
+cv2.imwrite(os.path.join(out_dir, "panel_gauss_row.png"), row_gauss)
 
-    mag = np.sqrt(r1**2 + r2**2 + r3**2 + r4**2)
-    return normalize_to_uint8(mag)
-
-# ============================================================
-#  PANEL VISUALISASI (OPSIONAL, TAPI SANGAT MEMBANTU LAPORAN)
-# ============================================================
-
-def add_label_bar(img_gray: np.ndarray, text: str) -> np.ndarray:
-    """
-    Menambahkan bar teks di bawah gambar grayscale (jadi 3-channel BGR).
-    """
-    img_color = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
-    h, w = img_color.shape[:2]
-    bar_h = 35
-    bar = np.full((bar_h, w, 3), 255, dtype=np.uint8)
-
-    cv2.putText(
-        bar, text,
-        (10, bar_h - 10),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6, (0, 0, 0), 1, cv2.LINE_AA
-    )
-
-    return np.vstack([img_color, bar])
-
-
-def save_edge_panel(orig: np.ndarray,
-                    rob: np.ndarray,
-                    prew: np.ndarray,
-                    sob: np.ndarray,
-                    frei: np.ndarray,
-                    out_path: str,
-                    title_prefix: str = ""):
-    """
-    Menyimpan panel 2x3:
-    [ Original | Roberts | Prewitt ]
-    [ Sobel    | Frei-Chen | (kosong / logo) ]
-    """
-    t0 = f"{title_prefix}Original"
-    t1 = f"{title_prefix}Roberts"
-    t2 = f"{title_prefix}Prewitt"
-    t3 = f"{title_prefix}Sobel"
-    t4 = f"{title_prefix}Frei-Chen"
-
-    tiles = [
-        add_label_bar(orig, t0),
-        add_label_bar(rob,  t1),
-        add_label_bar(prew, t2),
-        add_label_bar(sob,  t3),
-        add_label_bar(frei, t4),
-    ]
-
-    # bikin kotak putih kosong untuk slot ke-6
-    h, w = tiles[0].shape[:2]
-    empty = np.full((h, w, 3), 255, dtype=np.uint8)
-    tiles.append(add_label_bar(cv2.cvtColor(
-        cv2.cvtColor(empty, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR), ""))
-
-    row1 = cv2.hconcat(tiles[0:3])
-    row2 = cv2.hconcat(tiles[3:6])
-    panel = cv2.vconcat([row1, row2])
-
-    cv2.imwrite(out_path, panel)
-
-# ============================================================
-#  PROSES UNTUK SATU CITRA
-# ============================================================
-
-def process_single_image(img_path: str, tag: str, out_root: str = "output"):
-    """
-    Memproses satu citra: Roberts, Prewitt, Sobel, Frei-Chen.
-    Menyimpan hasil per-metode dan satu panel gabungan.
-    """
-    print(f"\n=== Memproses: {tag} ({img_path}) ===")
-
-    img_gray = load_as_gray(img_path)
-
-    # folder khusus untuk citra ini
-    out_dir = os.path.join(out_root, tag)
-    ensure_dir(out_dir)
-
-    # simpan grayscale dasar
-    base_gray_path = os.path.join(out_dir, f"{tag}_gray.png")
-    cv2.imwrite(base_gray_path, img_gray)
-
-    # hitung masing-masing metode
-    edge_rob = edge_roberts(img_gray)
-    edge_pre = edge_prewitt(img_gray)
-    edge_sob = edge_sobel(img_gray)
-    edge_fre = edge_freichen(img_gray)
-
-    # simpan masing-masing
-    cv2.imwrite(os.path.join(out_dir, f"{tag}_roberts.png"), edge_rob)
-    cv2.imwrite(os.path.join(out_dir, f"{tag}_prewitt.png"), edge_pre)
-    cv2.imwrite(os.path.join(out_dir, f"{tag}_sobel.png"), edge_sob)
-    cv2.imwrite(os.path.join(out_dir, f"{tag}_freichen.png"), edge_fre)
-
-    # simpan panel 2x3
-    panel_path = os.path.join(out_dir, f"{tag}_panel_edges.png")
-    save_edge_panel(
-        img_gray, edge_rob, edge_pre, edge_sob, edge_fre,
-        panel_path,
-        title_prefix=f"{tag} - "
-    )
-
-    print(f"✔ Hasil disimpan di folder: {out_dir}")
-    print(f"   - Grayscale  : {base_gray_path}")
-    print(f"   - Roberts    : {tag}_roberts.png")
-    print(f"   - Prewitt    : {tag}_prewitt.png")
-    print(f"   - Sobel      : {tag}_sobel.png")
-    print(f"   - Frei-Chen  : {tag}_freichen.png")
-    print(f"   - Panel      : {tag}_panel_edges.png")
-
-# ============================================================
-#  MAIN PROGRAMs
-# ============================================================
-
-if __name__ == "__main__":
-    # GANTI path ini sesuai 4 citra dari tugas restorasi-mu
-    # Misal:
-    #   1) citra grayscale asli
-    #   2) citra dengan derau salt & pepper
-    #   3) citra dengan derau gaussian
-    #   4) citra hasil restorasi / citra lain yang relevan
-    IMAGE_LIST = [
-        ("gray_clean",   "potrait_gray.png"),
-        ("noise_sp",     "potrait_gray_sp_8.png.png"),
-        ("noise_gauss",  "potrait_gray_gauss_25.png.png"),
-        ("restored",     "potrait.png"),
-    ]
-
-    out_root = "output_segmentasi"
-    ensure_dir(out_root)
-
-    for tag, path in IMAGE_LIST:
-        if not os.path.isfile(path):
-            print(f"[PERINGATAN] File tidak ditemukan: {path} (tag: {tag})")
-            continue
-        process_single_image(path, tag, out_root=out_root)
-
-    print("\n=== SELESAI SEMUA CITRA ===")
+print(f"\nImages and CSV saved under: {out_dir}")
+print(f" - CSV: {csv_path}")
+print(f" - Bar chart: {plt_path}")
+print(" - Panels: panel_clean_row.png, panel_sp_row.png, panel_gauss_row.png")
